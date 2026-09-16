@@ -20,8 +20,8 @@ object CallService {
     type: String = "video",
   ): CallSession {
     log.i("startCall sipUsername=$sipUsername type=$type")
-    sip.makeCall(username = sipUsername, displayName = displayName, type = type)
-    return CallSession(callId = "${sipUsername}_${System.currentTimeMillis()}", deviceId = sipUsername)
+    val callId = sip.makeCall(username = sipUsername, displayName = displayName, type = type)
+    return CallSession(callId = callId, deviceId = sipUsername)
   }
 
   fun accept(sip: SipCore) {

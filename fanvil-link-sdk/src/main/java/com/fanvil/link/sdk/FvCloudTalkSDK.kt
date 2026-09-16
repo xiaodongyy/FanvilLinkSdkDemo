@@ -18,6 +18,7 @@ import com.fanvil.link.sdk.mqtt.buildMqttUsername
 import com.fanvil.link.sdk.mqtt.defaultSubscribeTopics
 import com.fanvil.link.sdk.rtc.FvRtcVideoView
 import com.fanvil.link.sdk.rtc.RinoRtcEngine
+import com.fanvil.link.sdk.rtc.RtcViewRegistry
 import com.fanvil.link.sdk.sip.SipCore
 import com.fanvil.link.sdk.sip.SipRegistrationState
 import com.fanvil.link.sdk.utils.RinoAudioUtils
@@ -144,6 +145,9 @@ object FvCloudTalkSDK {
                 }
             }
         }
+        sipBridge.onSipOutgoing = { topic, payload ->
+            listeners.forEach { it.onSipOutgoing(topic, payload) }
+        }
         sipBridge.start(
             agoraId = config.agoraId,
             userId = config.userId,
@@ -157,6 +161,24 @@ object FvCloudTalkSDK {
         val ready = config != null && mqtt?.isConnected() == true
         log.t("isReady=$ready")
         return ready
+    }
+
+    fun publish(topic: String, payload: String) {
+        val mqttHolder = mqtt ?: throw IllegalStateException("SDK not initialized")
+        mqttHolder.publish(topic, payload)
+    }
+
+    fun reconnect() {
+        val cfg = config ?: throw IllegalStateException("SDK not initialized")
+        val mqttHolder = mqtt ?: throw IllegalStateException("SDK not initialized")
+        if (mqttHolder.isConnected()) return
+        mqttHolder.connect(
+            url = cfg.mqttUrl.trim(),
+            clientId = cfg.userId,
+            username = buildMqttUsername(cfg.mqttUserName.trim()),
+            password = cfg.accessToken.trim(),
+        )
+        mqttHolder.subscribe(defaultSubscribeTopics(cfg.userId, cfg.agoraId))
     }
 
     fun isCalling(): Boolean {
@@ -189,6 +211,25 @@ object FvCloudTalkSDK {
             return existing
         }
         return FvRtcVideoView(context).also { rtcVideoView = it }
+    }
+
+    /** 强制丢掉当前视频容器，下次 getRtcView 会新建。普通切页不必调。 */
+    fun releaseRtcView() {
+        log.i("releaseRtcView held=${rtcVideoView != null}")
+        val view = rtcVideoView ?: return
+        view.removeAllViews()
+        (view.parent as? ViewGroup)?.removeView(view)
+        rtcVideoView = null
+        RtcViewRegistry.current = null
+    }
+
+    internal fun onRtcViewDetached(view: FvRtcVideoView) {
+        if (rtcVideoView !== view) return
+        if (view.isAttachedToWindow) return
+        log.i("onRtcViewDetached")
+        view.removeAllViews()
+        rtcVideoView = null
+        RtcViewRegistry.current = null
     }
 
     fun openDoor(mac: String, whichDoor: Int = 1, doorNoList: List<Int>? = null) {
@@ -229,6 +270,8 @@ object FvCloudTalkSDK {
             log.w("startCall skipped: already calling")
             return false
         }
+        bridge?.resetRtcSession()
+        rtc?.clearCache()
         val session = CallService.startCall(sipCore, sipUsername, type = type)
         activeCall = session
         mediaJoined = false
@@ -440,6 +483,12 @@ object FvCloudTalkSDK {
 
             "onCallStateChanged" -> {
                 val state = payload["state"] as? CallState ?: return
+                val callId = payload["callId"] as? String
+                val deviceId = payload["deviceId"] as? String
+                val startedAt = (payload["startedAt"] as? Number)?.toLong()
+                if (!callId.isNullOrEmpty() && !deviceId.isNullOrEmpty() && startedAt != null) {
+                    activeCall = CallSession(callId, deviceId, startedAt)
+                }
                 val prevState = lastCallState
                 lastCallState = state
                 if (state == CallState.Incoming) {
@@ -466,6 +515,11 @@ object FvCloudTalkSDK {
                     }
                 }
                 if (state == CallState.End || state == CallState.Released || state == CallState.Error) {
+                    try {
+                        rtc?.leaveChannel()
+                    } catch (e: Exception) {
+                        log.w("leaveChannel on call end failed", e)
+                    }
                     mediaJoined = false
                     monitorMode = false
                     lastCallState = null
@@ -478,6 +532,10 @@ object FvCloudTalkSDK {
                         payload["remoteDisplayName"] as? String,
                         payload["remoteAddress"] as? String,
                     )
+                }
+                if (state == CallState.Released || state == CallState.Error) {
+                    bridge?.resetRtcSession()
+                    activeCall = null
                 }
             }
         }

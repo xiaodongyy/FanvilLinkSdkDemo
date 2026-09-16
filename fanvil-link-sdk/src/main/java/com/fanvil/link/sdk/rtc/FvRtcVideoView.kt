@@ -5,6 +5,7 @@ import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import com.fanvil.link.sdk.FvCloudTalkSDK
 
 object RtcViewLayout {
   fun layoutChildren(container: ViewGroup) {
@@ -29,6 +30,16 @@ class FvRtcVideoView @JvmOverloads constructor(
   context: Context,
   attrs: AttributeSet? = null,
 ) : FrameLayout(context, attrs) {
+  companion object {
+    private const val DETACH_CONFIRM_MS = 100L
+  }
+
+  private val detachConfirm = Runnable {
+    if (!isAttachedToWindow) {
+      FvCloudTalkSDK.onRtcViewDetached(this)
+    }
+  }
+
   init {
     clipChildren = false
     clipToPadding = false
@@ -37,6 +48,7 @@ class FvRtcVideoView @JvmOverloads constructor(
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
+    removeCallbacks(detachConfirm)
     RtcViewRegistry.current = this
   }
 
@@ -53,6 +65,7 @@ class FvRtcVideoView @JvmOverloads constructor(
     if (RtcViewRegistry.current === this) {
       RtcViewRegistry.current = null
     }
+    postDelayed(detachConfirm, DETACH_CONFIRM_MS)
     super.onDetachedFromWindow()
   }
 }

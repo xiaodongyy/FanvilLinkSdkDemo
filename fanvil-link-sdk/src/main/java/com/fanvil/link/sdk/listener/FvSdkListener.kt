@@ -7,6 +7,7 @@ import com.fanvil.link.sdk.sip.SipRegistrationState
 interface FvSdkListener {
   fun onMqttConnectionChanged(status: String, code: Int?, message: String?, reconnect: Boolean?) {}
   fun onMqttMessage(topic: String, payload: String) {}
+  fun onSipOutgoing(topic: String, payload: String) {}
   fun onSipRegistration(state: SipRegistrationState, message: String) {}
   fun onCallStateChanged(
     state: CallState,

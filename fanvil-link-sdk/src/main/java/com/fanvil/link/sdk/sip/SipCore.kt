@@ -66,7 +66,11 @@ class SipCore(
 
     override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
       val remote = call.remoteAddress
+      val callLog = call.callLog
       val base = mapOf(
+        "callId" to callLog.callId,
+        "deviceId" to remote?.username,
+        "startedAt" to callLog.startDate * 1000,
         "remoteUsername" to remote?.username,
         "remoteDisplayName" to remote?.displayName,
         "remoteAddress" to remote?.asStringUriOnly(),
@@ -242,19 +246,15 @@ class SipCore(
     lastRegistrationState = null
   }
 
-  fun makeCall(username: String, displayName: String? = "", type: String = "video") {
+  fun makeCall(username: String, displayName: String? = "", type: String = "video"): String {
     Log.i(TAG, "makeCall username=$username displayName=$displayName type=$type")
     val c = requireCore()
     val domain = c.defaultAccount?.params?.identityAddress?.domain ?: "127.0.0.1"
     val remoteSipUri = if (username.startsWith("sip:")) username else "sip:$username@$domain"
-    val remoteAddress = Factory.instance().createAddress(remoteSipUri) ?: run {
-      Log.w(TAG, "makeCall failed: invalid address $remoteSipUri")
-      return
-    }
-    val params = c.createCallParams(null) ?: run {
-      Log.w(TAG, "makeCall failed: createCallParams null")
-      return
-    }
+    val remoteAddress = Factory.instance().createAddress(remoteSipUri)
+      ?: throw IllegalArgumentException("Invalid SIP address: $remoteSipUri")
+    val params = c.createCallParams(null)
+      ?: throw IllegalStateException("SIP call params unavailable")
 
     when (type) {
       "audio" -> {
@@ -277,7 +277,10 @@ class SipCore(
     params.sessionName = displayName
     params.mediaEncryption = MediaEncryption.None
     Log.i(TAG, "makeCall invite $remoteSipUri video=${params.isVideoEnabled}")
-    c.inviteAddressWithParams(remoteAddress, params)
+    val call = c.inviteAddressWithParams(remoteAddress, params)
+      ?: throw IllegalStateException("SIP call unavailable")
+    return call.callLog.callId?.takeIf { it.isNotEmpty() }
+      ?: throw IllegalStateException("SIP call ID unavailable")
   }
 
   fun accept() {

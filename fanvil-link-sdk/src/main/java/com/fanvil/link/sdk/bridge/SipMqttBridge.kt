@@ -32,13 +32,15 @@ class SipMqttBridge(
   private var displayName: String? = null
 
   private val started = AtomicBoolean(false)
-  private var pendingRtcChannel = ""
-  private var rtcCallId = ""
-  private var rtcRemoteUid = RinoRtcEngine.FV_DEVICE_REMOTE_ID
-  private var rtcReady: RtcReadyState? = null
+  @Volatile private var pendingRtcChannel = ""
+  @Volatile private var rtcCallId = ""
+  @Volatile private var endedRtcCallId = ""
+  @Volatile private var rtcRemoteUid = RinoRtcEngine.FV_DEVICE_REMOTE_ID
+  @Volatile private var rtcReady: RtcReadyState? = null
   private val rtcWaiters = CopyOnWriteArrayList<(RtcReadyState) -> Unit>()
   private val mainHandler = Handler(Looper.getMainLooper())
   var onRtcTokenReady: (() -> Unit)? = null
+  var onSipOutgoing: ((topic: String, payload: String) -> Unit)? = null
 
   data class RtcReadyState(
     val channelName: String,
@@ -61,18 +63,23 @@ class SipMqttBridge(
 
     if (started.compareAndSet(false, true)) {
       LoopBackManager.setOutgoingHandler { sipBody, from, to, callId, method ->
+        val ready = rtcReady
+        val channelName = if (rtcCallId == callId) ready?.channelName.orEmpty() else ""
         val bean = JSONObject()
           .put("version", "1.0.0")
           .put("callId", callId)
           .put("sipType", method)
-          .put("channelName", rtcReady?.channelName.orEmpty())
+          .put("channelName", channelName)
           .put("msgId", "app_${System.currentTimeMillis()}")
           .put("from", from)
           .put("to", to)
           .put("aid", agoraId.toLongOrNull() ?: 0)
           .put("sipBody", sipBody)
+        val topic = MqttTopics.sipUp(agoraId)
+        val payload = bean.toString()
         try {
-          mqtt.publish(MqttTopics.sipUp(agoraId), bean.toString())
+          mqtt.publish(topic, payload)
+          onSipOutgoing?.invoke(topic, payload)
         } catch (e: Exception) {
           log.w("publish sip/up failed", e)
         }
@@ -186,12 +193,18 @@ class SipMqttBridge(
     LoopBackManager.setOutgoingHandler(null)
     LoopBackManager.uninit()
     started.set(false)
+    resetRtcSession()
+    onRtcTokenReady = null
+    onSipOutgoing = null
+  }
+
+  fun resetRtcSession() {
+    if (rtcCallId.isNotEmpty()) endedRtcCallId = rtcCallId
     pendingRtcChannel = ""
     rtcCallId = ""
     rtcReady = null
     rtcRemoteUid = RinoRtcEngine.FV_DEVICE_REMOTE_ID
     rtcWaiters.clear()
-    onRtcTokenReady = null
   }
 
   fun getChannelName(): String =
@@ -200,6 +213,7 @@ class SipMqttBridge(
   fun isRtcReady(): Boolean = rtcReady != null
 
   private fun requestRtcToken(channelName: String, callId: String = rtcCallId) {
+    if (callId.isNotEmpty() && callId == endedRtcCallId) return
     if (callId.isNotEmpty() && rtcCallId != callId) {
       rtcCallId = callId
       pendingRtcChannel = ""
@@ -231,7 +245,7 @@ class SipMqttBridge(
       val token = rtcTokenJson.optString("rtcToken")
       val localUid = agoraId.toIntOrNull() ?: 0
       if (channelName.isEmpty() || token.isEmpty() || localUid <= 0 || agoraAppId.isEmpty()) return
-      if (pendingRtcChannel.isNotEmpty() && channelName != pendingRtcChannel) return
+      if (pendingRtcChannel.isEmpty() || channelName != pendingRtcChannel) return
 
       val rtm = data.optJSONObject("rtmToken")
       val ready = RtcReadyState(

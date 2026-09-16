@@ -3,7 +3,7 @@ plugins {
 }
 
 // true = 依赖源码模块调试；false = 依赖 app/libs 下 AAR（交付形态）
-def useSdkSource = true
+def useSdkSource = false
 
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('keystore.properties')
@@ -85,7 +85,7 @@ dependencies {
     if (useSdkSource) {
         implementation project(':fanvil-link-sdk')
     } else {
-        implementation files('libs/fv_cloud_talk-sdk-0.0.1-release.aar')
+        implementation files('libs/fv_cloud_talk-sdk-0.0.3-release.aar')
     }
     // 源码/AAR 模式均需宿主提供 linphone；AAR 模式还需显式引入 rinoPanel
     implementation files('libs/linphone-sdk-android-0.0.12-release.aar')

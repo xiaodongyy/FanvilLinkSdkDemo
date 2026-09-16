@@ -40,6 +40,10 @@ class MainActivity : Activity() {
             showStatus(getString(R.string.status_sip, state.toString(), message))
         }
 
+        override fun onSipOutgoing(topic: String, payload: String) {
+            Log.i(TAG, "SIP outgoing topic=$topic payload=$payload")
+        }
+
         override fun onCallStateChanged(
             state: CallState,
             remoteUsername: String?,

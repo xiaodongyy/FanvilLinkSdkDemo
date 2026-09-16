@@ -1,5 +1,15 @@
--keep class com.fanvil.link.sdk.** { *; }
+# 宿主开启 minify 时保留 SDK 公开 API 与 JNI
+-keep class com.fanvil.link.sdk.FvCloudTalkSDK { *; }
+-keep class com.fanvil.link.sdk.FvSdkConfig { *; }
+-keep class com.fanvil.link.sdk.listener.FvSdkListener { *; }
+-keep class com.fanvil.link.sdk.call.CallState { *; }
+-keep class com.fanvil.link.sdk.call.CallSession { *; }
+-keep class com.fanvil.link.sdk.sip.SipRegistrationState { *; }
+-keep class com.fanvil.link.sdk.rtc.RtcEvent { *; }
+-keep class com.fanvil.link.sdk.rtc.FvRtcVideoView { *; }
+-keep class com.fanvil.link.sdk.utils.FvlLogger { *; }
+-keep class com.fanvil.link.sdk.utils.FvlLogger$* { *; }
 -keep class com.fanvil.link.sdk.sip.LoopBackManager { *; }
--keepclassmembers class com.fanvil.link.sdk.sip.LoopBackManager {
-  void onMqttMessageCallback(java.lang.String, java.lang.String, java.lang.String, java.lang.String, int);
-}
+-dontwarn org.linphone.**
+-dontwarn org.eclipse.paho.**
+-dontwarn com.smart.rinoiot.**

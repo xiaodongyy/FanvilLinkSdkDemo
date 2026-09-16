@@ -46,7 +46,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="@string/hint_access_token"
-            android:text="282112d470c445bf82764592e1f66d30"
+            android:text="bacffb5f6dcd4a1daec97a365b3c5ba8"
             android:inputType="text" />
 
         <EditText

@@ -40,6 +40,8 @@
 fun initialize(context: Context, config: FvSdkConfig)
 fun destroy()
 fun isReady(): Boolean   // 已 initialize 且 MQTT 已连接
+fun reconnect()
+fun publish(topic: String, payload: String)
 ```
 
 ### 监听 / 视频
@@ -48,9 +50,10 @@ fun isReady(): Boolean   // 已 initialize 且 MQTT 已连接
 fun addListener(listener: FvSdkListener)
 fun removeListener(listener: FvSdkListener)
 fun getRtcView(context: Context): FvRtcVideoView
+fun releaseRtcView()
 ```
 
-`getRtcView` 由 SDK 创建。重复获取会先从旧 parent 摘下，返回同一实例。
+`getRtcView` 由 SDK 创建。重复获取会先从旧 parent 摘下，返回同一实例。页面切走会自动释放；花屏等特殊情况可调 `releaseRtcView()`，再 `getRtcView` 新建。
 
 ### 呼叫
 
@@ -66,7 +69,7 @@ fun isMediaJoined(): Boolean
 fun getActiveCall(): CallSession?
 ```
 
-`CallSession`：`callId`、`deviceId`、`startedAt`。
+`CallSession`：`callId`、`deviceId`、`startedAt`。`callId` 为 Linphone 实际创建的 SIP Call-ID。
 
 - `startCall`：`isVideo = true` 视频呼叫，`false` 语音呼叫
 - `startMonitor`：监控（关麦、带视频），与 `startCall` 独立；默认 30s 倒计时，到 0 自动挂断；`timeoutSeconds <= 0` 不加倒计时
@@ -93,6 +96,7 @@ fun openDoor(mac: String, whichDoor: Int = 1, doorNoList: List<Int>? = null)
 ```kotlin
 fun onMqttConnectionChanged(status: String, code: Int?, message: String?, reconnect: Boolean?)
 fun onMqttMessage(topic: String, payload: String)
+fun onSipOutgoing(topic: String, payload: String)
 fun onSipRegistration(state: SipRegistrationState, message: String)
 fun onCallStateChanged(
     state: CallState,

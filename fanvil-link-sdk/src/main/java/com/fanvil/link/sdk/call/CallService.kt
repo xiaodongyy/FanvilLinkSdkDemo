@@ -43,7 +43,7 @@ object CallService {
     log.i("setMuted muted=$muted")
     sip.setMicEnabled(!muted)
     try {
-      rtc?.setMuteAudio(muted)
+      rtc?.setMicEnabled(!muted)
     } catch (e: Exception) {
       log.w("setMuted rtc failed", e)
     }

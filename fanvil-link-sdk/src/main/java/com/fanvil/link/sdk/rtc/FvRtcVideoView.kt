@@ -50,6 +50,7 @@ class FvRtcVideoView @JvmOverloads constructor(
     super.onAttachedToWindow()
     removeCallbacks(detachConfirm)
     RtcViewRegistry.current = this
+    FvCloudTalkSDK.onRtcViewReattached(this)
   }
 
   override fun requestLayout() {

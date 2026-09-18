@@ -1,7 +1,5 @@
 package com.fanvil.link.sdk.bridge
 
-import android.os.Handler
-import android.os.Looper
 import android.view.ViewGroup
 import com.fanvil.link.sdk.mqtt.MqttClientHolder
 import com.fanvil.link.sdk.mqtt.MqttTopics
@@ -11,9 +9,6 @@ import com.fanvil.link.sdk.sip.LoopBackManager
 import com.fanvil.link.sdk.sip.SipCore
 import com.fanvil.link.sdk.utils.FvlLogger
 import org.json.JSONObject
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -37,12 +32,11 @@ class SipMqttBridge(
   @Volatile private var endedRtcCallId = ""
   @Volatile private var rtcRemoteUid = RinoRtcEngine.FV_DEVICE_REMOTE_ID
   @Volatile private var rtcReady: RtcReadyState? = null
-  private val rtcWaiters = CopyOnWriteArrayList<(RtcReadyState) -> Unit>()
-  private val mainHandler = Handler(Looper.getMainLooper())
-  var onRtcTokenReady: (() -> Unit)? = null
+  var onRtcTokenReady: ((RtcReadyState) -> Unit)? = null
   var onSipOutgoing: ((topic: String, payload: String) -> Unit)? = null
 
   data class RtcReadyState(
+    val callId: String,
     val channelName: String,
     val localUid: Int,
     val remoteUid: Int,
@@ -107,8 +101,7 @@ class SipMqttBridge(
           if (message.optString("msgType") == "channelChange") {
             val channelName = message.optJSONObject("data")?.optString("channelName").orEmpty()
             if (channelName.isNotEmpty()) {
-              pendingRtcChannel = ""
-              requestRtcToken(channelName)
+              requestRtcToken(channelName, force = true)
             }
           }
         } catch (_: Exception) {
@@ -146,14 +139,64 @@ class SipMqttBridge(
     LoopBackManager.notifyMqttConnected(connected)
   }
 
+  @Synchronized
   fun joinOutgoingCallRtc(
+    callId: String,
     videoContainer: ViewGroup? = null,
     isSpeakerOn: Boolean = true,
-    timeoutMs: Long = 15_000,
     micEnabled: Boolean = true,
-  ) {
-    log.d("joinOutgoingCallRtc rtcReady=$rtcReady")
-    val ready = rtcReady ?: awaitRtcReady(timeoutMs)
+  ): Boolean {
+    val ready = rtcReady
+    if (ready == null || ready.callId != callId || callId == endedRtcCallId) {
+      log.d(
+        "joinOutgoingCallRtc pending callId=$callId " +
+          "readyCallId=${ready?.callId} endedCallId=$endedRtcCallId",
+      )
+      return false
+    }
+    if (!applyRtcToken(ready)) return false
+    rtc.setRemoteUid(ready.remoteUid)
+    rtc.setRemoteChannelName(ready.channelName)
+    rtc.setMicEnabled(micEnabled)
+    val container = videoContainer ?: RtcViewRegistry.current
+    if (container == null) {
+      log.d("joinOutgoingCallRtc pending: FvRtcVideoView not mounted callId=$callId")
+      return false
+    }
+    rtc.attachPlayerContainer(container)
+    rtc.joinChannel(ready.localUid, isSpeakerOn)
+    return true
+  }
+
+  fun stop() {
+    LoopBackManager.setOutgoingHandler(null)
+    LoopBackManager.uninit()
+    started.set(false)
+    resetRtcSession()
+    onRtcTokenReady = null
+    onSipOutgoing = null
+  }
+
+  @Synchronized
+  fun resetRtcSession() {
+    if (rtcCallId.isNotEmpty()) endedRtcCallId = rtcCallId
+    pendingRtcChannel = ""
+    rtcCallId = ""
+    rtcReady = null
+    rtcRemoteUid = RinoRtcEngine.FV_DEVICE_REMOTE_ID
+  }
+
+  fun getChannelName(): String =
+    rtcReady?.channelName?.takeIf { it.isNotEmpty() } ?: pendingRtcChannel
+
+  fun isRtcReady(callId: String? = null): Boolean {
+    val ready = rtcReady ?: return false
+    return callId.isNullOrEmpty() || ready.callId == callId
+  }
+
+  @Synchronized
+  fun applyRtcToken(ready: RtcReadyState): Boolean {
+    if (rtcReady != ready || ready.callId == endedRtcCallId) return false
     rtc.initIpc(ready.agoraAppId)
     rtc.setToken(
       agoraAppId = ready.agoraAppId,
@@ -166,60 +209,23 @@ class SipMqttBridge(
       rtmToken = ready.rtmToken,
       rtmExpire = ready.rtmExpire,
     )
-    rtc.setRemoteUid(rtcRemoteUid)
-    rtc.setRemoteChannelName(ready.channelName)
-    rtc.setMicEnabled(micEnabled)
-    val container = videoContainer ?: RtcViewRegistry.current
-      ?: throw IllegalStateException("FvRtcVideoView not mounted")
-    rtc.attachPlayerContainer(container)
-
-    var lastError: Exception? = null
-    repeat(8) {
-      try {
-        rtc.joinChannel(ready.localUid, isSpeakerOn)
-        return
-      } catch (e: Exception) {
-        lastError = e
-        if (e.message?.contains("not ready") != true && e.message?.contains("not mounted") != true) {
-          throw e
-        }
-        Thread.sleep(150)
-      }
-    }
-    throw lastError ?: IllegalStateException("FvRtcVideoView not mounted")
+    return true
   }
 
-  fun stop() {
-    LoopBackManager.setOutgoingHandler(null)
-    LoopBackManager.uninit()
-    started.set(false)
-    resetRtcSession()
-    onRtcTokenReady = null
-    onSipOutgoing = null
-  }
-
-  fun resetRtcSession() {
-    if (rtcCallId.isNotEmpty()) endedRtcCallId = rtcCallId
-    pendingRtcChannel = ""
-    rtcCallId = ""
-    rtcReady = null
-    rtcRemoteUid = RinoRtcEngine.FV_DEVICE_REMOTE_ID
-    rtcWaiters.clear()
-  }
-
-  fun getChannelName(): String =
-    rtcReady?.channelName?.takeIf { it.isNotEmpty() } ?: pendingRtcChannel
-
-  fun isRtcReady(): Boolean = rtcReady != null
-
-  private fun requestRtcToken(channelName: String, callId: String = rtcCallId) {
+  @Synchronized
+  private fun requestRtcToken(
+    channelName: String,
+    callId: String = rtcCallId,
+    force: Boolean = false,
+  ) {
     if (callId.isNotEmpty() && callId == endedRtcCallId) return
     if (callId.isNotEmpty() && rtcCallId != callId) {
       rtcCallId = callId
       pendingRtcChannel = ""
       rtcReady = null
     }
-    if (userId.isEmpty() || channelName.isEmpty() || pendingRtcChannel == channelName) return
+    if (userId.isEmpty() || channelName.isEmpty()) return
+    if (!force && pendingRtcChannel == channelName) return
     pendingRtcChannel = channelName
     rtcReady = null
     val body = JSONObject()
@@ -236,6 +242,7 @@ class SipMqttBridge(
     }
   }
 
+  @Synchronized
   private fun handleRtcTokenAck(payload: String) {
     try {
       val parsed = JSONObject(payload)
@@ -248,7 +255,10 @@ class SipMqttBridge(
       if (pendingRtcChannel.isEmpty() || channelName != pendingRtcChannel) return
 
       val rtm = data.optJSONObject("rtmToken")
+      val callId = rtcCallId
+      if (callId.isEmpty() || callId == endedRtcCallId) return
       val ready = RtcReadyState(
+        callId = callId,
         channelName = channelName,
         localUid = localUid,
         remoteUid = rtcRemoteUid,
@@ -260,40 +270,11 @@ class SipMqttBridge(
         rtmToken = rtm?.optString("rtmToken"),
         rtmExpire = rtm?.optInt("expireSecond", 3600) ?: 3600,
       )
-      rtc.initIpc(agoraAppId)
-      rtc.setToken(
-        agoraAppId = ready.agoraAppId,
-        userId = ready.userId,
-        channelName = ready.channelName,
-        uid = ready.localUid,
-        rtcToken = ready.rtcToken,
-        expireSecond = ready.expireSecond,
-        rtmAccount = ready.rtmAccount,
-        rtmToken = ready.rtmToken,
-        rtmExpire = ready.rtmExpire,
-      )
       rtcReady = ready
-      rtcWaiters.toList().forEach { it(ready) }
-      rtcWaiters.clear()
-      onRtcTokenReady?.invoke()
+      onRtcTokenReady?.invoke(ready)
     } catch (e: Exception) {
       log.w("handleRtcTokenAck", e)
     }
-  }
-
-  private fun awaitRtcReady(timeoutMs: Long): RtcReadyState {
-    rtcReady?.let { return it }
-    val latch = CountDownLatch(1)
-    var result: RtcReadyState? = null
-    val waiter: (RtcReadyState) -> Unit = {
-      result = it
-      latch.countDown()
-    }
-    rtcWaiters.add(waiter)
-    val ok = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-    rtcWaiters.remove(waiter)
-    if (!ok || result == null) throw IllegalStateException("RTC token timeout")
-    return result!!
   }
 
   private fun parseSipBody(parsed: JSONObject?, payload: String): String? {

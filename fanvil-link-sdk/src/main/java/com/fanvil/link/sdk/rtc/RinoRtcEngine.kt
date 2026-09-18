@@ -23,6 +23,7 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 瀵归綈 AndroidDoorAccess library_rino / RinoManager 鐨勬牳蹇冭兘鍔涳紙鍘绘帀 EventBus / 涓氬姟渚濊禆锛夈€?
@@ -53,6 +54,8 @@ class RinoRtcEngine(
   private var rinoRemotePlayer: RinoRemotePlayer? = null
   private var playerContainer: ViewGroup? = null
   private var lastSnapshotPath: String? = null
+  private val mediaGeneration = AtomicLong(0)
+  private var joinSpeakerOn = true
   private val mainHandler = Handler(Looper.getMainLooper())
 
   fun initIpc(appId: String) {
@@ -162,6 +165,46 @@ class RinoRtcEngine(
     playerContainer = container
   }
 
+  fun reattachPlayerContainer(container: ViewGroup) {
+    runOnMain {
+      val token = agoraUserTokenVO
+      val player = rinoRemotePlayer
+      if (!hasJoinChannelJob || token == null) {
+        log.d(
+          "RTC view reattached skipped joined=$hasJoinChannelJob " +
+            "token=${token != null} player=${player != null}",
+        )
+        return@runOnMain
+      }
+
+      if (player == null) {
+        if (playerContainer === container) {
+          log.d("RTC pending view attached")
+          return@runOnMain
+        }
+        val generation = mediaGeneration.incrementAndGet()
+        playerContainer = container
+        log.i("RTC pending view changed; continue join")
+        waitUntilReady(container, { isJoinCurrent(generation) }) {
+          if (!isJoinCurrent(generation)) return@waitUntilReady
+          initRinoPlayer(container, remoteUid)
+          setEnableSpeakerphone(joinSpeakerOn)
+        }
+        return@runOnMain
+      }
+
+      log.i(
+        "RTC view reattached; recreate player channel=${token.rtcToken?.channelName} " +
+          "remoteUid=$remoteUid",
+      )
+      playerContainer = container
+      container.removeAllViews()
+      player.removeAllViews()
+      rinoRemotePlayer = null
+      initRinoPlayer(container, remoteUid)
+    }
+  }
+
   fun joinChannel(localUid: Int, isSpeakerOn: Boolean = true) {
     if (hasJoinChannelJob) {
       log.i("joinChannel skipped: already joined")
@@ -170,22 +213,38 @@ class RinoRtcEngine(
     val token = agoraUserTokenVO ?: throw IllegalStateException("RTC token not set")
     initIpc(token.agoraAppId ?: agoraAppId)
     val container = playerContainer ?: throw IllegalStateException("RTC view not ready")
+    joinSpeakerOn = isSpeakerOn
     hasJoinChannelJob = true
+    val generation = mediaGeneration.get()
     runOnMain {
+      if (!isJoinCurrent(generation)) return@runOnMain
       log.i(
         "joinChannel(main) channel=${token.rtcToken?.channelName} localUid=$localUid remoteUid=$remoteUid speaker=$isSpeakerOn size=${container.width}x${container.height} attached=${container.isAttachedToWindow}",
       )
-      waitUntilReady(container) {
+      waitUntilReady(container, { isJoinCurrent(generation) }) {
+        if (!isJoinCurrent(generation)) return@waitUntilReady
         initRinoPlayer(container, remoteUid)
         setEnableSpeakerphone(isSpeakerOn)
       }
     }
   }
 
-  private fun waitUntilReady(view: View, action: () -> Unit) {
+  private fun isJoinCurrent(generation: Long): Boolean {
+    return generation == mediaGeneration.get() && hasJoinChannelJob && agoraUserTokenVO != null
+  }
+
+  private fun waitUntilReady(
+    view: View,
+    isCurrent: () -> Boolean,
+    action: () -> Unit,
+  ) {
     var started = false
     fun startIfReady(): Boolean {
       if (started) return true
+      if (!isCurrent()) {
+        started = true
+        return true
+      }
       if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) return false
       started = true
       log.i("view ready size=${view.width}x${view.height}")
@@ -240,6 +299,7 @@ class RinoRtcEngine(
   }
 
   fun leaveChannel() {
+    mediaGeneration.incrementAndGet()
     runOnMainBlocking {
       releasePlayer()
       val channelName = agoraUserTokenVO?.rtcToken?.channelName
@@ -327,6 +387,7 @@ class RinoRtcEngine(
   }
 
   fun clearCache() {
+    mediaGeneration.incrementAndGet()
     remoteChannelName = ""
     agoraUserTokenVO = null
     hasJoinChannelJob = false
